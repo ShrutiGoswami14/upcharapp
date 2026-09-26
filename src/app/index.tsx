@@ -1,9 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
-  ScrollView,
   StatusBar,
   SafeAreaView,
   Platform,
@@ -618,6 +616,54 @@ export default function DoctorDashboardScreen() {
     return acc + sched.morningSlots.length + sched.eveningSlots.length;
   }, 0);
   const openSlotsToday = totalSlotsToday - totalAppointmentsToday;
+  Text,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useAuth } from '../context/AuthContext';
+import { useClinic } from '../context/ClinicContext';
+import { Clinic } from '../types/clinic';
+
+import { LoginScreen } from '../components/auth/LoginScreen';
+import { PatientRegistrationScreen } from '../components/auth/PatientRegistrationScreen';
+import { RoleTopBar } from '../components/common/RoleTopBar';
+import { PatientDashboard } from '../components/patient/PatientDashboard';
+import { DoctorDashboard } from '../components/doctor/DoctorDashboard';
+import { LabDashboard } from '../components/lab/LabDashboard';
+import { ClinicDashboard } from '../components/clinic/ClinicDashboard';
+import { OnboardingScreen, ONBOARDING_STORAGE_KEY } from '../components/onboarding/OnboardingScreen';
+
+export default function AppEntry() {
+  const router = useRouter();
+  const { isAuthenticated, activeRole, isRestoring } = useAuth();
+  const { selectClinic, toastMessage } = useClinic();
+
+  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
+  const [hasSeenOnboarding, setHasSeenOnboarding] = useState<boolean | null>(null);
+  const [authView, setAuthView] = useState<'login' | 'register'>('login');
+
+  useEffect(() => {
+    checkOnboardingStatus();
+  }, []);
+
+  const checkOnboardingStatus = async () => {
+    try {
+      // During development, reset onboarding flag so it always shows on restart.
+      // Remove this block (or set to false) before shipping to production.
+      if (__DEV__) {
+        await AsyncStorage.removeItem(ONBOARDING_STORAGE_KEY);
+      }
+      const value = await AsyncStorage.getItem(ONBOARDING_STORAGE_KEY);
+      setHasSeenOnboarding(value === 'true');
+    } catch (e) {
+      setHasSeenOnboarding(false);
+    } finally {
+      setIsLoadingAuth(false);
+    }
+  };
 
   const handleOpenClinic = (clinic: Clinic) => {
     selectClinic(clinic.id);
@@ -639,11 +685,55 @@ export default function DoctorDashboardScreen() {
     showToast(`${test} ordered for ${patient}`);
   };
 
+  // Loading state: wait for onboarding check AND Supabase session restore
+  if (isLoadingAuth || hasSeenOnboarding === null || isRestoring) {
+    return (
+      <View style={styles.loadingContainer}>
+        <StatusBar barStyle="light-content" backgroundColor="#0B8EF3" />
+        <View style={styles.loadingCard}>
+          <Ionicons name="medical" size={42} color="#0B8EF3" />
+          <Text style={styles.loadingTitle}>Upchar Health</Text>
+          <ActivityIndicator size="small" color="#0B8EF3" style={{ marginTop: 12 }} />
+        </View>
+      </View>
+    );
+  }
+
+  // First-time open: show onboarding carousel
+  if (!hasSeenOnboarding) {
+    return (
+      <OnboardingScreen
+        onComplete={() => {
+          setHasSeenOnboarding(true);
+        }}
+      />
+    );
+  }
+
+  // If user is not yet logged in, show the tri-role login or registration screen
+  if (!isAuthenticated) {
+    if (authView === 'register') {
+      return (
+        <PatientRegistrationScreen
+          onBackToLogin={() => setAuthView('login')}
+          onSuccessRegistration={() => setAuthView('login')}
+        />
+      );
+    }
+    return (
+      <LoginScreen
+        onNavigateToRegister={() => setAuthView('register')}
+      />
+    );
+  }
+
+  // Once authenticated, show the active role experience with the RoleTopBar
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F8FAFD" />
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
       {/* Floating Toast */}
+      {/* Floating Toast Notification from ClinicContext */}
       {toastMessage && (
         <View style={styles.toastContainer}>
           <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
@@ -1043,6 +1133,31 @@ export default function DoctorDashboardScreen() {
         onClose={() => { setPatientDetailOpen(false); setSelectedPatient(null); }}
         patient={selectedPatient}
       />
+      {/* Top Role Switcher Bar: Allows instantaneous switching between Patient, Doctor, Clinic, and Lab */}
+      <RoleTopBar />
+
+      {/* Render the Active Role Experience */}
+      <View style={styles.content}>
+        {activeRole === 'patient' && (
+          <PatientDashboard
+            onNavigateToClinicDetail={(clinicId) => {
+              selectClinic(clinicId);
+              router.push({
+                pathname: '/schedule-detail',
+                params: { clinicId },
+              });
+            }}
+          />
+        )}
+
+        {activeRole === 'clinic' && <ClinicDashboard />}
+
+        {activeRole === 'doctor' && (
+          <DoctorDashboard onOpenClinic={handleOpenClinic} />
+        )}
+
+        {activeRole === 'lab' && <LabDashboard />}
+      </View>
     </SafeAreaView>
   );
 }
@@ -1052,21 +1167,40 @@ export default function DoctorDashboardScreen() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#0F172A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingCard: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 28,
+    paddingVertical: 24,
+    borderRadius: 20,
+    alignItems: 'center',
+  },
+  loadingTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginTop: 8,
+  },
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFD',
-  },
-  container: {
-    flex: 1,
+    backgroundColor: '#FFFFFF',
   },
   contentContainer: {
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'android' ? 12 : 6,
     paddingBottom: 60,
+  content: {
+    flex: 1,
+    backgroundColor: '#F8FAFD',
   },
   toastContainer: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 50 : 20,
+    top: 50,
     left: 20,
     right: 20,
     backgroundColor: '#0F172A',
