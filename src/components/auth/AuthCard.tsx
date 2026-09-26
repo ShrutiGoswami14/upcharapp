@@ -20,6 +20,7 @@ interface AuthCardProps {
   onForgotPassword?: (email?: string) => void;
   onAlternateIdPress?: () => void;
   errorMessage?: string | null;
+  onError?: (error: string) => void;
 }
 
 export const AuthCard: React.FC<AuthCardProps> = ({
@@ -30,6 +31,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({
   onForgotPassword,
   onAlternateIdPress,
   errorMessage,
+  onError,
 }) => {
   const config = ROLE_CONFIGS[activeRole];
 
@@ -37,17 +39,24 @@ export const AuthCard: React.FC<AuthCardProps> = ({
   const [password, setPassword] = useState('password123');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   // Update pre-filled values when switching roles for instant testing
   useEffect(() => {
     setIdentifier(config.defaultEmailOrId);
+    setLocalError(null);
   }, [activeRole]);
 
   const handlePressSignIn = async () => {
     setIsLoading(true);
+    setLocalError(null);
     try {
       // Pass credentials; parent decides whether to call Supabase or mock
       await onSignIn(identifier.trim(), password);
+    } catch (err: any) {
+      const msg = err?.message || 'Sign in failed. Please try again.';
+      setLocalError(msg);
+      onError?.(msg);
     } finally {
       setIsLoading(false);
     }
@@ -167,10 +176,10 @@ export const AuthCard: React.FC<AuthCardProps> = ({
       </TouchableOpacity>
 
       {/* Inline error message */}
-      {errorMessage ? (
+      {(errorMessage || localError) ? (
         <View style={styles.errorBanner}>
           <Ionicons name="alert-circle-outline" size={16} color="#DC2626" />
-          <Text style={styles.errorText}>{errorMessage}</Text>
+          <Text style={styles.errorText}>{errorMessage || localError}</Text>
         </View>
       ) : null}
     </View>

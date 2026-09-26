@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -46,26 +46,53 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
   const [appointment, setAppointment] = useState<LiveQueueData | null>(null);
   const [reports, setReports] = useState<DiagnosticReportItem[]>([]);
   const [isLoadingData, setIsLoadingData] = useState<boolean>(true);
+  const [apptLoadError, setApptLoadError] = useState<string | null>(null);
+  const [diagLoadError, setDiagLoadError] = useState<string | null>(null);
+  const [reloadTrigger, setReloadTrigger] = useState(0);
+
+  const handleRetry = useCallback(() => {
+    setReloadTrigger((prev) => prev + 1);
+  }, []);
 
   // Load real appointments and diagnostic reports from DB for this patient
   useEffect(() => {
     let isMounted = true;
 
     async function loadPatientData() {
+      setIsLoadingData(true);
+
       if (!user) {
-        setIsLoadingData(false);
+        if (isMounted) {
+          setAppointment(null);
+          setReports([]);
+          setApptLoadError(null);
+          setDiagLoadError(null);
+          setIsLoadingData(false);
+        }
         return;
       }
 
       try {
-        const safePatientId = user.id.replace(/[^a-zA-Z0-9-]/g, '');
+        const safePatientId = user.id ? user.id.replace(/[^a-zA-Z0-9-]/g, '') : '';
+        const idClause = safePatientId ? `patient_id.eq.${safePatientId}` : null;
         const cleanPhone = user.phone ? user.phone.replace(/[^0-9+]/g, '') : null;
         const safePhone = cleanPhone ? `"${cleanPhone}"` : null;
+        const phoneClause = safePhone ? `patient_phone.eq.${safePhone}` : null;
 
-        // Query appointments matching patient ID or patient phone safely quoted
-        const filterOr = safePhone
-          ? `patient_id.eq.${safePatientId},patient_phone.eq.${safePhone}`
-          : `patient_id.eq.${safePatientId}`;
+        // Query appointments matching non-empty patient ID or patient phone safely quoted
+        const filterClauses = [idClause, phoneClause].filter((c): c is string => Boolean(c));
+        if (filterClauses.length === 0) {
+          if (isMounted) {
+            setAppointment(null);
+            setReports([]);
+            setApptLoadError(null);
+            setDiagLoadError(null);
+          }
+          return;
+        }
+
+        const filterOr = filterClauses.join(',');
+        const diagFilterOr = filterOr;
 
         const { data: apptRows, error: apptError } = await supabase
           .from('appointments')
@@ -76,59 +103,59 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
 
         if (apptError) {
           console.error('Error loading patient appointments:', apptError);
-        }
-
-        if (isMounted && apptRows && apptRows.length > 0) {
-          const appt = apptRows[0];
-          const tokenNum =
-            appt.queue_number != null
-              ? appt.queue_number < 10
-                ? `#0${appt.queue_number}`
-                : `#${appt.queue_number}`
-              : '--';
-
-          const backendServing =
-            appt.current_serving ?? appt.now_serving ?? appt.currently_serving;
-          const nowServing =
-            backendServing != null
-              ? typeof backendServing === 'number'
-                ? backendServing < 10
-                  ? `#0${backendServing}`
-                  : `#${backendServing}`
-                : String(backendServing).startsWith('#')
-                ? String(backendServing)
-                : `#${backendServing}`
-              : '--';
-
-          const isDone = appt.status === 'Completed';
-
-          setAppointment({
-            doctorName: appt.doctor_name
-              ? `Dr. ${appt.doctor_name}${appt.specialization ? ` (${appt.specialization})` : ''}`
-              : 'Consulting Doctor',
-            specialization: appt.specialization || 'General Practice',
-            clinicName: appt.clinic_name || appt.organization_type || 'Clinic',
-            tokenNumber: tokenNum,
-            nowServing,
-            waitTime: isDone ? 'Done' : appt.wait_time || '--',
-            aheadText: isDone
-              ? 'Consultation completed • Prescription uploaded'
-              : appt.ahead_text ||
-                (appt.queue_number
-                  ? 'Please wait for your token to be called'
-                  : 'Appointment confirmed'),
-            status: appt.status || 'Confirmed',
-            timeSlot: appt.time_slot || '--',
-          });
+          if (isMounted) {
+            setApptLoadError('Unable to load appointment queue. Tap retry to reload.');
+          }
         } else if (isMounted) {
-          setAppointment(null);
+          setApptLoadError(null);
+          if (apptRows && apptRows.length > 0) {
+            const appt = apptRows[0];
+            const tokenNum =
+              appt.queue_number != null
+                ? appt.queue_number < 10
+                  ? `#0${appt.queue_number}`
+                  : `#${appt.queue_number}`
+                : '--';
+
+            const backendServing =
+              appt.current_serving ?? appt.now_serving ?? appt.currently_serving;
+            const nowServing =
+              backendServing != null
+                ? typeof backendServing === 'number'
+                  ? backendServing < 10
+                    ? `#0${backendServing}`
+                    : `#${backendServing}`
+                  : String(backendServing).startsWith('#')
+                  ? String(backendServing)
+                  : `#${backendServing}`
+                : '--';
+
+            const isDone = appt.status === 'Completed';
+
+            setAppointment({
+              doctorName: appt.doctor_name
+                ? `Dr. ${appt.doctor_name}${appt.specialization ? ` (${appt.specialization})` : ''}`
+                : 'Consulting Doctor',
+              specialization: appt.specialization || 'General Practice',
+              clinicName: appt.clinic_name || appt.organization_type || 'Clinic',
+              tokenNumber: tokenNum,
+              nowServing,
+              waitTime: isDone ? 'Done' : appt.wait_time || '--',
+              aheadText: isDone
+                ? 'Consultation completed • Prescription uploaded'
+                : appt.ahead_text ||
+                  (appt.queue_number
+                    ? 'Please wait for your token to be called'
+                    : 'Appointment confirmed'),
+              status: appt.status || 'Confirmed',
+              timeSlot: appt.time_slot || '--',
+            });
+          } else {
+            setAppointment(null);
+          }
         }
 
-        // Query diagnostic requests matching patient ID or sanitized phone only (no patient_name substring)
-        const diagFilterOr = safePhone
-          ? `patient_id.eq.${safePatientId},patient_phone.eq.${safePhone}`
-          : `patient_id.eq.${safePatientId}`;
-
+        // Query diagnostic requests matching non-empty patient ID or phone
         const { data: diagRows, error: diagError } = await supabase
           .from('diagnostic_requests')
           .select('*')
@@ -138,51 +165,55 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
 
         if (diagError) {
           console.error('Error loading diagnostic requests:', diagError);
-        }
-
-        if (isMounted && diagRows && diagRows.length > 0) {
-          const mappedReports: DiagnosticReportItem[] = diagRows.map(
-            (row: any) => {
-              let title = 'Health Diagnostic Panel';
-              if (
-                Array.isArray(row.selected_tests) &&
-                row.selected_tests.length > 0
-              ) {
-                title = row.selected_tests.join(' • ');
-              } else if (typeof row.selected_tests === 'string') {
-                title = row.selected_tests;
-              } else if (row.custom_tests) {
-                title = row.custom_tests;
-              }
-
-              const formattedDate = row.created_at
-                ? new Date(row.created_at).toLocaleDateString('en-IN', {
-                    day: '2-digit',
-                    month: 'short',
-                    year: 'numeric',
-                  })
-                : 'Recent';
-
-              const labName = `${row.diagnostic_center_name || 'Diagnostic Lab'} • ${formattedDate}`;
-              const status =
-                row.status === 'paid'
-                  ? 'Verified Report Ready'
-                  : row.status === 'quoted'
-                  ? 'Quote Available'
-                  : 'Processing Sample';
-
-              return {
-                id: row.id,
-                title,
-                labName,
-                status,
-                reportUrl: row.report_url,
-              };
-            }
-          );
-          setReports(mappedReports);
+          if (isMounted) {
+            setDiagLoadError('Unable to load diagnostic reports. Tap retry to reload.');
+          }
         } else if (isMounted) {
-          setReports([]);
+          setDiagLoadError(null);
+          if (diagRows && diagRows.length > 0) {
+            const mappedReports: DiagnosticReportItem[] = diagRows.map(
+              (row: any) => {
+                let title = 'Health Diagnostic Panel';
+                if (
+                  Array.isArray(row.selected_tests) &&
+                  row.selected_tests.length > 0
+                ) {
+                  title = row.selected_tests.join(' • ');
+                } else if (typeof row.selected_tests === 'string') {
+                  title = row.selected_tests;
+                } else if (row.custom_tests) {
+                  title = row.custom_tests;
+                }
+
+                const formattedDate = row.created_at
+                  ? new Date(row.created_at).toLocaleDateString('en-IN', {
+                      day: '2-digit',
+                      month: 'short',
+                      year: 'numeric',
+                    })
+                  : 'Recent';
+
+                const labName = `${row.diagnostic_center_name || 'Diagnostic Lab'} • ${formattedDate}`;
+                const status =
+                  row.status === 'paid'
+                    ? 'Verified Report Ready'
+                    : row.status === 'quoted'
+                    ? 'Quote Available'
+                    : 'Processing Sample';
+
+                return {
+                  id: row.id,
+                  title,
+                  labName,
+                  status,
+                  reportUrl: row.report_url,
+                };
+              }
+            );
+            setReports(mappedReports);
+          } else {
+            setReports([]);
+          }
         }
       } catch (err) {
         console.warn('Could not load patient DB attributes:', err);
@@ -198,7 +229,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [user]);
+  }, [user, reloadTrigger]);
 
   return (
     <ScrollView
@@ -262,6 +293,16 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
         <View style={styles.loadingQueueCard}>
           <ActivityIndicator size="small" color="#0080FF" />
           <Text style={styles.loadingQueueText}>Loading live queue status...</Text>
+        </View>
+      ) : apptLoadError ? (
+        <View style={styles.errorQueueCard}>
+          <Ionicons name="alert-circle-outline" size={26} color="#EF4444" />
+          <Text style={styles.errorQueueTitle}>Failed to Load Queue</Text>
+          <Text style={styles.errorQueueSubtitle}>{apptLoadError}</Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={handleRetry} activeOpacity={0.8}>
+            <Ionicons name="refresh-outline" size={15} color="#0080FF" />
+            <Text style={styles.retryBtnText}>Retry</Text>
+          </TouchableOpacity>
         </View>
       ) : appointment ? (
         <View style={styles.liveQueueCard}>
@@ -392,6 +433,16 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
         <View style={styles.emptyReportsBox}>
           <ActivityIndicator size="small" color="#0080FF" />
           <Text style={styles.emptyReportsText}>Loading reports...</Text>
+        </View>
+      ) : diagLoadError ? (
+        <View style={styles.errorReportsBox}>
+          <Ionicons name="alert-circle-outline" size={24} color="#EF4444" />
+          <Text style={styles.errorReportsTitle}>Failed to Load Reports</Text>
+          <Text style={styles.errorReportsSubtitle}>{diagLoadError}</Text>
+          <TouchableOpacity style={styles.retryBtn} onPress={handleRetry} activeOpacity={0.8}>
+            <Ionicons name="refresh-outline" size={15} color="#0080FF" />
+            <Text style={styles.retryBtnText}>Retry</Text>
+          </TouchableOpacity>
         </View>
       ) : reports.length > 0 ? (
         reports.map((report) => (
@@ -812,5 +863,66 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#64748B',
     fontWeight: '500',
+  },
+  errorQueueCard: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  errorQueueTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#991B1B',
+    marginTop: 8,
+  },
+  errorQueueSubtitle: {
+    fontSize: 12.5,
+    color: '#B91C1C',
+    textAlign: 'center',
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  errorReportsBox: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    marginBottom: 10,
+    gap: 6,
+  },
+  errorReportsTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  errorReportsSubtitle: {
+    fontSize: 12,
+    color: '#B91C1C',
+    textAlign: 'center',
+  },
+  retryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  retryBtnText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: '#0080FF',
   },
 });

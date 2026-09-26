@@ -32,6 +32,7 @@ export interface SignUpCredentials {
 export interface AuthResult {
   user: UserProfile | null;
   error: string | null;
+  isIncompleteProfile?: boolean;
 }
 
 /** Resolves the application role from database profile_type */
@@ -54,11 +55,11 @@ export function resolveUserRole(profileType?: string): UserRole {
 }
 
 /** Maps a Supabase profile row to our app's UserProfile with authorized role */
-export function mapProfileToUserProfile(profile: any): UserProfile {
+export function mapProfileToUserProfile(profile: any, userMetadata?: any): UserProfile {
   const role = resolveUserRole(profile.profile_type);
 
   // Generate or read role-specific identifier
-  let identifier = profile.metadata?.uhid;
+  let identifier = profile.metadata?.uhid || userMetadata?.uhid;
   if (!identifier) {
     const code = profile.id ? profile.id.slice(0, 6).toUpperCase() : 'USER';
     if (role === 'doctor') identifier = `DOC-REG-${code}`;
@@ -68,14 +69,14 @@ export function mapProfileToUserProfile(profile: any): UserProfile {
   }
 
   // Display name: use center_name for clinic/lab if available
-  let displayName = profile.full_name;
+  let displayName = profile.full_name || userMetadata?.full_name;
   if (!displayName || displayName.trim() === '') {
     displayName = profile.metadata?.center_name || profile.email?.split('@')[0] || 'User';
   }
 
   // Generate role-appropriate tagline / specialty
-  let specialtyOrTagline = profile.metadata?.uhid
-    ? `UHID: ${profile.metadata.uhid} • Blood Group ${profile.metadata.blood_group || 'O+'}`
+  let specialtyOrTagline = (profile.metadata?.uhid || userMetadata?.uhid)
+    ? `UHID: ${profile.metadata?.uhid || userMetadata?.uhid} • Blood Group ${profile.metadata?.blood_group || userMetadata?.blood_group || 'O+'}`
     : undefined;
 
   if (role === 'doctor') {
@@ -86,7 +87,7 @@ export function mapProfileToUserProfile(profile: any): UserProfile {
   } else if (role === 'lab') {
     specialtyOrTagline = 'NABL Accredited • Diagnostic & Pathology Center';
   } else if (role === 'patient') {
-    const bg = profile.metadata?.blood_group || 'O+ Positive';
+    const bg = profile.metadata?.blood_group || userMetadata?.blood_group || 'O+ Positive';
     specialtyOrTagline = `UHID: ${identifier} • Blood Group ${bg}`;
   }
 
@@ -96,18 +97,19 @@ export function mapProfileToUserProfile(profile: any): UserProfile {
     role,
     identifier,
     email: profile.email,
-    phone: profile.phone ?? undefined,
-    avatarUrl: profile.avatar_url ?? undefined,
+    phone: profile.phone ?? userMetadata?.phone ?? undefined,
+    avatarUrl: profile.avatar_url ?? userMetadata?.avatar_url ?? undefined,
     specialtyOrTagline,
-    bloodGroup: profile.metadata?.blood_group || 'O+ Positive',
-    dateOfBirth: profile.metadata?.date_of_birth,
-    gender: profile.metadata?.gender,
+    bloodGroup: profile.metadata?.blood_group || userMetadata?.blood_group || 'O+ Positive',
+    dateOfBirth: profile.metadata?.date_of_birth || userMetadata?.date_of_birth,
+    gender: profile.metadata?.gender || userMetadata?.gender,
     address:
       profile.metadata?.address ||
+      userMetadata?.address ||
       [profile.metadata?.city, profile.metadata?.state, profile.metadata?.pincode]
         .filter(Boolean)
         .join(', '),
-    isVerified: profile.status === 'active',
+    isVerified: profile.status === 'active' || userMetadata?.email_confirmed_at != null,
   };
 }
 
@@ -146,14 +148,23 @@ export async function signInUser(
         id: data.user.id,
         name: data.user.user_metadata?.full_name || data.user.email?.split('@')[0] || 'User',
         role,
-        identifier: `UPC-${data.user.id.slice(0, 6).toUpperCase()}`,
+        identifier: data.user.user_metadata?.uhid || `UPC-${data.user.id.slice(0, 6).toUpperCase()}`,
         email: data.user.email!,
+        phone: data.user.user_metadata?.phone,
+        avatarUrl: data.user.user_metadata?.avatar_url,
+        specialtyOrTagline: data.user.user_metadata?.uhid
+          ? `UHID: ${data.user.user_metadata.uhid} • Blood Group ${data.user.user_metadata?.blood_group || 'O+'}`
+          : undefined,
+        bloodGroup: data.user.user_metadata?.blood_group || 'O+ Positive',
+        dateOfBirth: data.user.user_metadata?.date_of_birth,
+        gender: data.user.user_metadata?.gender,
+        address: data.user.user_metadata?.address,
         isVerified: data.user.email_confirmed_at != null,
       };
       return { user: fallbackProfile, error: null };
     }
 
-    return { user: mapProfileToUserProfile(profile), error: null };
+    return { user: mapProfileToUserProfile(profile, data.user.user_metadata), error: null };
   } catch (err: any) {
     return { user: null, error: 'Network error. Check your connection and try again.' };
   }
@@ -161,6 +172,68 @@ export async function signInUser(
 
 /** Backward-compatibility alias */
 export const signInPatient = signInUser;
+
+/**
+ * Sign up a new patient with email + password.
+ * Creates auth user + updates profile row with profile_type = 'patient'.
+ */
+/**
+ * Complete or retry profile setup for an authenticated user without repeating auth sign-up.
+ */
+export async function completePatientProfile(
+  userId: string,
+  credentials: Partial<SignUpCredentials>
+): Promise<AuthResult> {
+  try {
+    const uhid = `UPC-PAT-${userId.slice(0, 6).toUpperCase()}`;
+    const metadata = {
+      uhid,
+      date_of_birth: credentials.dateOfBirth,
+      gender: credentials.gender,
+      blood_group: credentials.bloodGroup,
+      address: credentials.address,
+    };
+
+    const { data: updatedProfiles, error: updateError } = await supabase
+      .from('profiles')
+      .upsert({
+        id: userId,
+        full_name: credentials.fullName?.trim() || 'Patient',
+        phone: credentials.phone ?? null,
+        avatar_url: credentials.avatarUrl ?? null,
+        profile_type: 'patient',
+        metadata,
+      })
+      .select();
+
+    if (updateError) {
+      return {
+        user: null,
+        error: humaniseError(updateError.message),
+        isIncompleteProfile: true,
+      };
+    }
+
+    if (!updatedProfiles || updatedProfiles.length === 0) {
+      return {
+        user: null,
+        error: 'Failed to complete profile setup. Please try again.',
+        isIncompleteProfile: true,
+      };
+    }
+
+    return {
+      user: mapProfileToUserProfile(updatedProfiles[0]),
+      error: null,
+    };
+  } catch {
+    return {
+      user: null,
+      error: 'Network error while completing profile.',
+      isIncompleteProfile: true,
+    };
+  }
+}
 
 /**
  * Sign up a new patient with email + password.
@@ -179,24 +252,32 @@ export async function signUpPatient(
           full_name: credentials.fullName.trim(),
           phone: credentials.phone ?? null,
           profile_type: 'patient',
+          date_of_birth: credentials.dateOfBirth ?? null,
+          gender: credentials.gender ?? null,
+          blood_group: credentials.bloodGroup ?? null,
+          address: credentials.address ?? null,
+          avatar_url: credentials.avatarUrl ?? null,
         },
       },
     });
 
     if (error) {
+      if (error.message.includes('User already registered')) {
+        // Attempt sign-in with the provided password so an already-created account can complete setup without repeating sign-up
+        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+          email,
+          password: credentials.password,
+        });
+
+        if (!signInErr && signInData?.user && signInData?.session) {
+          return completePatientProfile(signInData.user.id, credentials);
+        }
+      }
       return { user: null, error: humaniseError(error.message) };
     }
 
     if (!data.user) {
       return { user: null, error: 'Registration failed. Please try again.' };
-    }
-
-    // When Supabase requires email confirmation before session creation
-    if (!data.session) {
-      return {
-        user: null,
-        error: 'Please check your email to confirm your account before signing in.',
-      };
     }
 
     const uhid = `UPC-PAT-${data.user.id.slice(0, 6).toUpperCase()}`;
@@ -208,8 +289,31 @@ export async function signUpPatient(
       address: credentials.address,
     };
 
+    // When Supabase requires email confirmation before session creation:
+    // persist the profile write before returning the confirmation message
+    if (!data.session) {
+      try {
+        await supabase
+          .from('profiles')
+          .update({
+            full_name: credentials.fullName.trim(),
+            phone: credentials.phone ?? null,
+            avatar_url: credentials.avatarUrl ?? null,
+            metadata,
+          })
+          .eq('id', data.user.id);
+      } catch {
+        // Fallback: options.data already persisted on auth.users and will be synced upon confirmation
+      }
+
+      return {
+        user: null,
+        error: 'Please check your email to confirm your account before signing in.',
+      };
+    }
+
     // Update the profile row that was created by the DB trigger
-    const { data: updatedProfiles, error: updateError } = await supabase
+    let { data: updatedProfiles, error: updateError } = await supabase
       .from('profiles')
       .update({
         full_name: credentials.fullName.trim(),
@@ -220,14 +324,48 @@ export async function signUpPatient(
       .eq('id', data.user.id)
       .select();
 
-    if (updateError) {
-      return { user: null, error: humaniseError(updateError.message) };
+    // If update returned 0 rows, try upserting directly
+    if (!updateError && (!updatedProfiles || updatedProfiles.length === 0)) {
+      const upsertRes = await supabase
+        .from('profiles')
+        .upsert({
+          id: data.user.id,
+          full_name: credentials.fullName.trim(),
+          phone: credentials.phone ?? null,
+          avatar_url: credentials.avatarUrl ?? null,
+          profile_type: 'patient',
+          metadata,
+        })
+        .select();
+
+      updatedProfiles = upsertRes.data;
+      updateError = upsertRes.error;
     }
 
-    if (!updatedProfiles || updatedProfiles.length === 0) {
+    // Distinguish incomplete-profile state from sign-up failure so the user isn't stuck
+    if (updateError || !updatedProfiles || updatedProfiles.length === 0) {
+      const incompleteProfile: UserProfile = {
+        id: data.user.id,
+        name: credentials.fullName.trim(),
+        role: 'patient',
+        identifier: uhid,
+        email: data.user.email!,
+        phone: credentials.phone,
+        avatarUrl: credentials.avatarUrl,
+        specialtyOrTagline: `UHID: ${uhid} • Profile Pending`,
+        bloodGroup: credentials.bloodGroup,
+        dateOfBirth: credentials.dateOfBirth,
+        gender: credentials.gender,
+        address: credentials.address,
+        isVerified: false,
+      };
+
       return {
-        user: null,
-        error: 'Failed to save patient profile. Please try again.',
+        user: incompleteProfile,
+        error: updateError
+          ? humaniseError(updateError.message)
+          : 'Account created, but profile setup could not be saved. You can complete it in settings.',
+        isIncompleteProfile: true,
       };
     }
 
@@ -297,13 +435,22 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
         id: session.user.id,
         name: session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || 'User',
         role: fallbackRole,
-        identifier: `UPC-${session.user.id.slice(0, 6).toUpperCase()}`,
+        identifier: session.user.user_metadata?.uhid || `UPC-${session.user.id.slice(0, 6).toUpperCase()}`,
         email: session.user.email!,
+        phone: session.user.user_metadata?.phone,
+        avatarUrl: session.user.user_metadata?.avatar_url,
+        specialtyOrTagline: session.user.user_metadata?.uhid
+          ? `UHID: ${session.user.user_metadata.uhid} • Blood Group ${session.user.user_metadata?.blood_group || 'O+'}`
+          : undefined,
+        bloodGroup: session.user.user_metadata?.blood_group || 'O+ Positive',
+        dateOfBirth: session.user.user_metadata?.date_of_birth,
+        gender: session.user.user_metadata?.gender,
+        address: session.user.user_metadata?.address,
         isVerified: session.user.email_confirmed_at != null,
       };
     }
 
-    return mapProfileToUserProfile(profile);
+    return mapProfileToUserProfile(profile, session.user.user_metadata);
   } catch {
     return null;
   }

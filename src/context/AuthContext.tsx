@@ -127,13 +127,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       phone?: string
     ): Promise<AuthError | null> => {
       const result = await signUpPatient({ email, password, fullName, phone });
-      if (result.error) {
-        return { message: result.error };
-      }
       if (result.user) {
         setUser(result.user);
         setActiveRole('patient');
         setIsAuthenticated(true);
+      }
+      if (result.error) {
+        return { message: result.error };
       }
       return null;
     },
@@ -181,14 +181,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         avatarUrl: data.avatarUri,
       });
 
-      if (result.error) {
-        return { message: result.error };
-      }
-
       if (result.user) {
         setUser(result.user);
         setActiveRole('patient');
         setIsAuthenticated(true);
+      }
+
+      if (result.error) {
+        return { message: result.error };
       }
       return null;
     }
