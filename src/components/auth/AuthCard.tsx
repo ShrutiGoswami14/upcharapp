@@ -14,7 +14,7 @@ import { ROLE_CONFIGS } from '../../constants/roleConfig';
 interface AuthCardProps {
   activeRole: UserRole;
   /** Called with email+password when patient; or with empty strings for other roles (demo). */
-  onSignIn: (email: string, password: string) => void;
+  onSignIn: (email: string, password: string) => Promise<void> | void;
   rememberDevice: boolean;
   onToggleRemember: (val: boolean) => void;
   onForgotPassword?: (email?: string) => void;
@@ -43,12 +43,14 @@ export const AuthCard: React.FC<AuthCardProps> = ({
     setIdentifier(config.defaultEmailOrId);
   }, [activeRole]);
 
-  const handlePressSignIn = () => {
+  const handlePressSignIn = async () => {
     setIsLoading(true);
-    // Pass credentials; parent decides whether to call Supabase or mock
-    onSignIn(identifier.trim(), password);
-    // Loading state is controlled by parent for async flows
-    setTimeout(() => setIsLoading(false), 1500);
+    try {
+      // Pass credentials; parent decides whether to call Supabase or mock
+      await onSignIn(identifier.trim(), password);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

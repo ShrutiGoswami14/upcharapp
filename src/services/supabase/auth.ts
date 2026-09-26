@@ -191,16 +191,12 @@ export async function signUpPatient(
       return { user: null, error: 'Registration failed. Please try again.' };
     }
 
-    // Ensure session is active if auto-confirmed
+    // When Supabase requires email confirmation before session creation
     if (!data.session) {
-      try {
-        await supabase.auth.signInWithPassword({
-          email,
-          password: credentials.password,
-        });
-      } catch (err) {
-        // Fallback: session might already be set or handled
-      }
+      return {
+        user: null,
+        error: 'Please check your email to confirm your account before signing in.',
+      };
     }
 
     const uhid = `UPC-PAT-${data.user.id.slice(0, 6).toUpperCase()}`;
@@ -213,25 +209,37 @@ export async function signUpPatient(
     };
 
     // Update the profile row that was created by the DB trigger
-    try {
-      await supabase.from('profiles').update({
+    const { data: updatedProfiles, error: updateError } = await supabase
+      .from('profiles')
+      .update({
         full_name: credentials.fullName.trim(),
         phone: credentials.phone ?? null,
         avatar_url: credentials.avatarUrl ?? null,
         metadata,
-      }).eq('id', data.user.id);
-    } catch (updateErr) {
-      console.warn('Profile update warning:', updateErr);
+      })
+      .eq('id', data.user.id)
+      .select();
+
+    if (updateError) {
+      return { user: null, error: humaniseError(updateError.message) };
     }
 
+    if (!updatedProfiles || updatedProfiles.length === 0) {
+      return {
+        user: null,
+        error: 'Failed to save patient profile. Please try again.',
+      };
+    }
+
+    const updated = updatedProfiles[0];
     const newProfile: UserProfile = {
       id: data.user.id,
-      name: credentials.fullName.trim(),
+      name: updated.full_name || credentials.fullName.trim(),
       role: 'patient',
       identifier: uhid,
       email: data.user.email!,
-      phone: credentials.phone,
-      avatarUrl: credentials.avatarUrl,
+      phone: updated.phone || credentials.phone,
+      avatarUrl: updated.avatar_url || credentials.avatarUrl,
       specialtyOrTagline: `UHID: ${uhid} • Blood Group ${credentials.bloodGroup || 'O+'}`,
       bloodGroup: credentials.bloodGroup,
       dateOfBirth: credentials.dateOfBirth,

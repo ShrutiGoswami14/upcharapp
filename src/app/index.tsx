@@ -25,7 +25,7 @@ import { OnboardingScreen, ONBOARDING_STORAGE_KEY } from '../components/onboardi
 
 export default function AppEntry() {
   const router = useRouter();
-  const { isAuthenticated, activeRole, isLoading: isAuthLoading } = useAuth();
+  const { isAuthenticated, activeRole, isRestoring } = useAuth();
   const { selectClinic, toastMessage } = useClinic();
 
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
@@ -61,7 +61,7 @@ export default function AppEntry() {
   };
 
   // Loading state: wait for onboarding check AND Supabase session restore
-  if (isLoadingAuth || hasSeenOnboarding === null || isAuthLoading) {
+  if (isLoadingAuth || hasSeenOnboarding === null || isRestoring) {
     return (
       <View style={styles.loadingContainer}>
         <StatusBar barStyle="light-content" backgroundColor="#0B8EF3" />

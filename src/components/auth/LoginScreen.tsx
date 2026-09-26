@@ -10,6 +10,7 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import { ROLE_CONFIGS } from '../../constants/roleConfig';
 import { RoleSelector } from './RoleSelector';
@@ -61,16 +62,19 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         return;
       }
 
-      // If error occurred during patient login, show error message
-      if (activeRole === 'patient') {
-        setAuthError(err.message);
-        return;
-      }
+      // Display authentication error for all roles and return without demo fallback
+      setAuthError(err.message);
+      return;
     }
 
-    // Fallback: Demo / mock sign-in for quick testing of Doctor, Clinic, Lab
-    signIn(activeRole);
-    onSuccessLogin?.();
+    // Keep demo sign-in available only through an explicit demo action or a __DEV__-guarded path
+    if (__DEV__) {
+      signIn(activeRole);
+      onSuccessLogin?.();
+      return;
+    }
+
+    setAuthError('Please enter both email and password.');
   };
 
   // ── Forgot password ────────────────────────────────────────────────────────
@@ -171,6 +175,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
           onOtpPress={handleOtpPress}
         />
 
+        {/* Explicit Demo Sign-in (__DEV__ only) */}
+        {__DEV__ && (
+          <TouchableOpacity
+            style={styles.demoActionBtn}
+            onPress={() => {
+              signIn(activeRole);
+              onSuccessLogin?.();
+            }}
+          >
+            <Ionicons name="flash-outline" size={14} color="#64748B" />
+            <Text style={styles.demoActionText}>Demo Sign-In ({config.title})</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Create Account */}
         <View style={styles.footerRow}>
           <Text style={styles.footerPromptText}>Don't have an account? </Text>
@@ -270,5 +288,22 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  demoActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    backgroundColor: '#EEF2F6',
+    borderRadius: 10,
+    marginTop: 14,
+    alignSelf: 'center',
+  },
+  demoActionText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: '#64748B',
   },
 });

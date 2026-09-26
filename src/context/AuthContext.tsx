@@ -26,6 +26,7 @@ interface AuthContextType {
   setActiveRole: (role: UserRole) => void;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isRestoring: boolean;
   user: UserProfile | null;
   rememberDevice: boolean;
   setRememberDevice: (remember: boolean) => void;
@@ -45,7 +46,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [activeRole, setActiveRole] = useState<UserRole>('patient');
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isRestoring, setIsRestoring] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [rememberDevice, setRememberDevice] = useState<boolean>(true);
 
@@ -54,13 +56,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     let mounted = true;
 
     const restoreSession = async () => {
-      const currentUser = await getCurrentUser();
-      if (mounted && currentUser) {
-        setUser(currentUser);
-        setActiveRole(currentUser.role);
-        setIsAuthenticated(true);
+      try {
+        const currentUser = await getCurrentUser();
+        if (mounted && currentUser) {
+          setUser(currentUser);
+          setActiveRole(currentUser.role);
+          setIsAuthenticated(true);
+        }
+      } catch (err) {
+        console.error('Error restoring session:', err);
+      } finally {
+        if (mounted) {
+          setIsRestoring(false);
+          setIsLoading(false);
+        }
       }
-      if (mounted) setIsLoading(false);
     };
 
     restoreSession();
@@ -69,18 +79,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (!mounted) return;
-        if (event === 'SIGNED_OUT' || !session) {
+        // Only clear user and auth state for SIGNED_OUT, not for every null session,
+        // so demo sign-ins are not wiped by Supabase null-session events.
+        if (event === 'SIGNED_OUT') {
           setUser(null);
           setIsAuthenticated(false);
-          setIsLoading(false);
-        } else if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        } else if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
           const currentUser = await getCurrentUser();
-          if (currentUser) {
+          if (currentUser && mounted) {
             setUser(currentUser);
             setActiveRole(currentUser.role);
             setIsAuthenticated(true);
           }
-          setIsLoading(false);
         }
       }
     );
@@ -94,10 +104,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // ── Real Supabase sign-in (patients) ─────────────────────────────────────
   const signInWithEmail = useCallback(
     async (email: string, password: string): Promise<AuthError | null> => {
-      setIsLoading(true);
       const result = await signInPatient({ email, password });
       if (result.error) {
-        setIsLoading(false);
         return { message: result.error };
       }
       if (result.user) {
@@ -105,7 +113,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setActiveRole(result.user.role);
         setIsAuthenticated(true);
       }
-      setIsLoading(false);
       return null;
     },
     []
@@ -119,10 +126,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       fullName: string,
       phone?: string
     ): Promise<AuthError | null> => {
-      setIsLoading(true);
       const result = await signUpPatient({ email, password, fullName, phone });
       if (result.error) {
-        setIsLoading(false);
         return { message: result.error };
       }
       if (result.user) {
@@ -130,7 +135,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setActiveRole('patient');
         setIsAuthenticated(true);
       }
-      setIsLoading(false);
       return null;
     },
     []
@@ -164,8 +168,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // ── Patient Registration (Supabase + fallback) ───────────────────────────
   const registerPatient = useCallback(async (data: PatientRegistrationData): Promise<AuthError | null> => {
-    setIsLoading(true);
-
     if (data.email && data.password) {
       const result = await signUpPatient({
         email: data.email,
@@ -180,7 +182,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       if (result.error) {
-        setIsLoading(false);
         return { message: result.error };
       }
 
@@ -189,7 +190,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setActiveRole('patient');
         setIsAuthenticated(true);
       }
-      setIsLoading(false);
       return null;
     }
 
@@ -215,7 +215,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setActiveRole('patient');
     setUser(newProfile);
     setIsAuthenticated(true);
-    setIsLoading(false);
     return null;
   }, []);
 
@@ -226,6 +225,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         setActiveRole,
         isAuthenticated,
         isLoading,
+        isRestoring,
         user,
         rememberDevice,
         setRememberDevice,

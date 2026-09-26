@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   TextInput,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
@@ -42,83 +43,102 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
   const { user } = useAuth();
 
   // Active appointment / OPD queue data matching database
-  const [appointment, setAppointment] = useState<LiveQueueData>({
-    doctorName: 'Dr. Roshan (General Physician)',
-    specialization: 'General Physician',
-    clinicName: 'City Care Clinic',
-    tokenNumber: '#01',
-    nowServing: '#01',
-    waitTime: 'Next',
-    aheadText: 'Your consultation slot is ready • Room 1',
-    status: 'Confirmed',
-    timeSlot: '11:00 AM',
-  });
-
-  // Recent diagnostic reports matching database
-  const [reports, setReports] = useState<DiagnosticReportItem[]>([
-    {
-      id: 'r1',
-      title: 'Complete Blood Count (CBC) + ESR',
-      labName: 'Diag3 Diagnostic Centre • 24 Sep 2026',
-      status: 'Verified Report Ready',
-    },
-  ]);
+  const [appointment, setAppointment] = useState<LiveQueueData | null>(null);
+  const [reports, setReports] = useState<DiagnosticReportItem[]>([]);
+  const [isLoadingData, setIsLoadingData] = useState<boolean>(true);
 
   // Load real appointments and diagnostic reports from DB for this patient
   useEffect(() => {
     let isMounted = true;
 
     async function loadPatientData() {
-      if (!user) return;
+      if (!user) {
+        setIsLoadingData(false);
+        return;
+      }
 
       try {
-        // Query appointments matching patient ID or patient phone
-        const filterOr = user.phone
-          ? `patient_id.eq.${user.id},patient_phone.eq.${user.phone}`
-          : `patient_id.eq.${user.id}`;
+        const safePatientId = user.id.replace(/[^a-zA-Z0-9-]/g, '');
+        const cleanPhone = user.phone ? user.phone.replace(/[^0-9+]/g, '') : null;
+        const safePhone = cleanPhone ? `"${cleanPhone}"` : null;
 
-        const { data: apptRows } = await supabase
+        // Query appointments matching patient ID or patient phone safely quoted
+        const filterOr = safePhone
+          ? `patient_id.eq.${safePatientId},patient_phone.eq.${safePhone}`
+          : `patient_id.eq.${safePatientId}`;
+
+        const { data: apptRows, error: apptError } = await supabase
           .from('appointments')
           .select('*')
           .or(filterOr)
           .order('date', { ascending: false })
           .limit(1);
 
+        if (apptError) {
+          console.error('Error loading patient appointments:', apptError);
+        }
+
         if (isMounted && apptRows && apptRows.length > 0) {
           const appt = apptRows[0];
-          const tokenNum = appt.queue_number
-            ? appt.queue_number < 10
-              ? `#0${appt.queue_number}`
-              : `#${appt.queue_number}`
-            : '#01';
+          const tokenNum =
+            appt.queue_number != null
+              ? appt.queue_number < 10
+                ? `#0${appt.queue_number}`
+                : `#${appt.queue_number}`
+              : '--';
+
+          const backendServing =
+            appt.current_serving ?? appt.now_serving ?? appt.currently_serving;
+          const nowServing =
+            backendServing != null
+              ? typeof backendServing === 'number'
+                ? backendServing < 10
+                  ? `#0${backendServing}`
+                  : `#${backendServing}`
+                : String(backendServing).startsWith('#')
+                ? String(backendServing)
+                : `#${backendServing}`
+              : '--';
+
           const isDone = appt.status === 'Completed';
 
           setAppointment({
-            doctorName: `Dr. ${appt.doctor_name || 'Roshan'} (${appt.specialization || 'General Physician'})`,
-            specialization: appt.specialization || 'General Physician',
-            clinicName: appt.organization_type || 'City Care Clinic',
+            doctorName: appt.doctor_name
+              ? `Dr. ${appt.doctor_name}${appt.specialization ? ` (${appt.specialization})` : ''}`
+              : 'Consulting Doctor',
+            specialization: appt.specialization || 'General Practice',
+            clinicName: appt.clinic_name || appt.organization_type || 'Clinic',
             tokenNumber: tokenNum,
-            nowServing: tokenNum,
-            waitTime: isDone ? 'Done' : '~10m',
+            nowServing,
+            waitTime: isDone ? 'Done' : appt.wait_time || '--',
             aheadText: isDone
               ? 'Consultation completed • Prescription uploaded'
-              : 'Next in line • Please proceed to consultation cabin',
+              : appt.ahead_text ||
+                (appt.queue_number
+                  ? 'Please wait for your token to be called'
+                  : 'Appointment confirmed'),
             status: appt.status || 'Confirmed',
-            timeSlot: appt.time_slot || '11:00 AM',
+            timeSlot: appt.time_slot || '--',
           });
+        } else if (isMounted) {
+          setAppointment(null);
         }
 
-        // Query diagnostic requests matching patient ID, phone, or name
-        const diagFilterOr = user.phone
-          ? `patient_id.eq.${user.id},patient_phone.eq.${user.phone},patient_name.ilike.%${user.name}%`
-          : `patient_id.eq.${user.id},patient_name.ilike.%${user.name}%`;
+        // Query diagnostic requests matching patient ID or sanitized phone only (no patient_name substring)
+        const diagFilterOr = safePhone
+          ? `patient_id.eq.${safePatientId},patient_phone.eq.${safePhone}`
+          : `patient_id.eq.${safePatientId}`;
 
-        const { data: diagRows } = await supabase
+        const { data: diagRows, error: diagError } = await supabase
           .from('diagnostic_requests')
           .select('*')
           .or(diagFilterOr)
           .order('created_at', { ascending: false })
           .limit(3);
+
+        if (diagError) {
+          console.error('Error loading diagnostic requests:', diagError);
+        }
 
         if (isMounted && diagRows && diagRows.length > 0) {
           const mappedReports: DiagnosticReportItem[] = diagRows.map(
@@ -143,7 +163,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
                   })
                 : 'Recent';
 
-              const labName = `${row.diagnostic_center_name || 'Diag3'} • ${formattedDate}`;
+              const labName = `${row.diagnostic_center_name || 'Diagnostic Lab'} • ${formattedDate}`;
               const status =
                 row.status === 'paid'
                   ? 'Verified Report Ready'
@@ -161,9 +181,15 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
             }
           );
           setReports(mappedReports);
+        } else if (isMounted) {
+          setReports([]);
         }
       } catch (err) {
         console.warn('Could not load patient DB attributes:', err);
+      } finally {
+        if (isMounted) {
+          setIsLoadingData(false);
+        }
       }
     }
 
@@ -200,7 +226,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
               <View style={styles.uhidBadge}>
                 <Ionicons name="card-outline" size={12} color="#0080FF" />
                 <Text style={styles.uhidText}>
-                  {user?.identifier || 'UPC-PAT-679342'}
+                  {user?.identifier || '--'}
                 </Text>
               </View>
               <View style={styles.bloodBadge}>
@@ -232,68 +258,83 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
       </View>
 
       {/* 3. Live OPD Queue Tracker Card (Connected to DB Appointments) */}
-      <View style={styles.liveQueueCard}>
-        <View style={styles.queueHeaderRow}>
-          <View style={styles.liveIndicator}>
-            <View style={styles.pulseDot} />
-            <Text style={styles.liveIndicatorText}>LIVE OPD QUEUE</Text>
-          </View>
-          <Text style={styles.clinicTag}>{appointment.clinicName}</Text>
+      {isLoadingData ? (
+        <View style={styles.loadingQueueCard}>
+          <ActivityIndicator size="small" color="#0080FF" />
+          <Text style={styles.loadingQueueText}>Loading live queue status...</Text>
         </View>
-
-        <View style={styles.queueBody}>
-          <View style={styles.doctorInfoRow}>
-            <MaterialCommunityIcons
-              name="stethoscope"
-              size={20}
-              color="#0080FF"
-            />
-            <Text style={styles.doctorNameText}>{appointment.doctorName}</Text>
+      ) : appointment ? (
+        <View style={styles.liveQueueCard}>
+          <View style={styles.queueHeaderRow}>
+            <View style={styles.liveIndicator}>
+              <View style={styles.pulseDot} />
+              <Text style={styles.liveIndicatorText}>LIVE OPD QUEUE</Text>
+            </View>
+            <Text style={styles.clinicTag}>{appointment.clinicName}</Text>
           </View>
 
-          <View style={styles.tokenHighlightRow}>
-            <View style={styles.tokenBox}>
-              <Text style={styles.tokenBoxLabel}>YOUR TOKEN</Text>
-              <Text style={styles.tokenBoxValue}>
-                {appointment.tokenNumber}
-              </Text>
+          <View style={styles.queueBody}>
+            <View style={styles.doctorInfoRow}>
+              <MaterialCommunityIcons
+                name="stethoscope"
+                size={20}
+                color="#0080FF"
+              />
+              <Text style={styles.doctorNameText}>{appointment.doctorName}</Text>
             </View>
 
-            <View style={styles.tokenDivider} />
+            <View style={styles.tokenHighlightRow}>
+              <View style={styles.tokenBox}>
+                <Text style={styles.tokenBoxLabel}>YOUR TOKEN</Text>
+                <Text style={styles.tokenBoxValue}>
+                  {appointment.tokenNumber}
+                </Text>
+              </View>
 
-            <View style={styles.tokenBox}>
-              <Text style={styles.tokenBoxLabel}>NOW SERVING</Text>
-              <Text style={[styles.tokenBoxValue, { color: '#0D9488' }]}>
-                {appointment.nowServing}
-              </Text>
+              <View style={styles.tokenDivider} />
+
+              <View style={styles.tokenBox}>
+                <Text style={styles.tokenBoxLabel}>NOW SERVING</Text>
+                <Text style={[styles.tokenBoxValue, { color: '#0D9488' }]}>
+                  {appointment.nowServing}
+                </Text>
+              </View>
+
+              <View style={styles.tokenDivider} />
+
+              <View style={styles.tokenBox}>
+                <Text style={styles.tokenBoxLabel}>WAIT TIME</Text>
+                <Text style={[styles.tokenBoxValue, { color: '#F59E0B' }]}>
+                  {appointment.waitTime}
+                </Text>
+              </View>
             </View>
 
-            <View style={styles.tokenDivider} />
-
-            <View style={styles.tokenBox}>
-              <Text style={styles.tokenBoxLabel}>WAIT TIME</Text>
-              <Text style={[styles.tokenBoxValue, { color: '#F59E0B' }]}>
-                {appointment.waitTime}
-              </Text>
+            <View style={styles.queueFooterRow}>
+              <View style={styles.aheadBadge}>
+                <Ionicons name="time-outline" size={14} color="#0369A1" />
+                <Text style={styles.aheadText}>{appointment.aheadText}</Text>
+              </View>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={styles.viewQueueDetailsBtn}
+                onPress={() => onNavigateToClinicDetail?.('city-care')}
+              >
+                <Text style={styles.viewQueueDetailsText}>View Schedule</Text>
+                <Ionicons name="chevron-forward" size={14} color="#0080FF" />
+              </TouchableOpacity>
             </View>
-          </View>
-
-          <View style={styles.queueFooterRow}>
-            <View style={styles.aheadBadge}>
-              <Ionicons name="time-outline" size={14} color="#0369A1" />
-              <Text style={styles.aheadText}>{appointment.aheadText}</Text>
-            </View>
-            <TouchableOpacity
-              activeOpacity={0.7}
-              style={styles.viewQueueDetailsBtn}
-              onPress={() => onNavigateToClinicDetail?.('city-care')}
-            >
-              <Text style={styles.viewQueueDetailsText}>View Schedule</Text>
-              <Ionicons name="chevron-forward" size={14} color="#0080FF" />
-            </TouchableOpacity>
           </View>
         </View>
-      </View>
+      ) : (
+        <View style={styles.emptyQueueCard}>
+          <Ionicons name="calendar-outline" size={28} color="#94A3B8" />
+          <Text style={styles.emptyQueueTitle}>No Active Appointments</Text>
+          <Text style={styles.emptyQueueSubtitle}>
+            When you book a consultation, your live token and queue tracking will appear here.
+          </Text>
+        </View>
+      )}
 
       {/* 4. Quick Actions Grid */}
       <Text style={styles.sectionTitle}>Healthcare Services</Text>
@@ -347,28 +388,40 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
         </TouchableOpacity>
       </View>
 
-      {reports.map((report) => (
-        <View key={report.id} style={styles.reportCard}>
-          <View style={styles.reportIconBox}>
-            <Ionicons
-              name="document-attach-outline"
-              size={24}
-              color="#0D9488"
-            />
-          </View>
-          <View style={styles.reportDetails}>
-            <Text style={styles.reportName}>{report.title}</Text>
-            <Text style={styles.reportLab}>{report.labName}</Text>
-            <View style={styles.readyBadge}>
-              <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
-              <Text style={styles.readyText}>{report.status}</Text>
-            </View>
-          </View>
-          <TouchableOpacity style={styles.downloadBtn}>
-            <Ionicons name="arrow-down-circle" size={26} color="#0080FF" />
-          </TouchableOpacity>
+      {isLoadingData ? (
+        <View style={styles.emptyReportsBox}>
+          <ActivityIndicator size="small" color="#0080FF" />
+          <Text style={styles.emptyReportsText}>Loading reports...</Text>
         </View>
-      ))}
+      ) : reports.length > 0 ? (
+        reports.map((report) => (
+          <View key={report.id} style={styles.reportCard}>
+            <View style={styles.reportIconBox}>
+              <Ionicons
+                name="document-attach-outline"
+                size={24}
+                color="#0D9488"
+              />
+            </View>
+            <View style={styles.reportDetails}>
+              <Text style={styles.reportName}>{report.title}</Text>
+              <Text style={styles.reportLab}>{report.labName}</Text>
+              <View style={styles.readyBadge}>
+                <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
+                <Text style={styles.readyText}>{report.status}</Text>
+              </View>
+            </View>
+            <TouchableOpacity style={styles.downloadBtn}>
+              <Ionicons name="arrow-down-circle" size={26} color="#0080FF" />
+            </TouchableOpacity>
+          </View>
+        ))
+      ) : (
+        <View style={styles.emptyReportsBox}>
+          <Ionicons name="document-text-outline" size={24} color="#94A3B8" />
+          <Text style={styles.emptyReportsText}>No diagnostic reports found</Text>
+        </View>
+      )}
     </ScrollView>
   );
 };
@@ -704,5 +757,60 @@ const styles = StyleSheet.create({
   },
   downloadBtn: {
     padding: 4,
+  },
+  loadingQueueCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 8,
+  },
+  loadingQueueText: {
+    fontSize: 13,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  emptyQueueCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  emptyQueueTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#334155',
+    marginTop: 8,
+  },
+  emptyQueueSubtitle: {
+    fontSize: 12.5,
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  emptyReportsBox: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 10,
+    gap: 6,
+  },
+  emptyReportsText: {
+    fontSize: 13,
+    color: '#64748B',
+    fontWeight: '500',
   },
 });
