@@ -13,11 +13,13 @@ import { ROLE_CONFIGS } from '../../constants/roleConfig';
 
 interface AuthCardProps {
   activeRole: UserRole;
-  onSignIn: () => void;
+  /** Called with email+password when patient; or with empty strings for other roles (demo). */
+  onSignIn: (email: string, password: string) => void;
   rememberDevice: boolean;
   onToggleRemember: (val: boolean) => void;
-  onForgotPassword?: () => void;
+  onForgotPassword?: (email?: string) => void;
   onAlternateIdPress?: () => void;
+  errorMessage?: string | null;
 }
 
 export const AuthCard: React.FC<AuthCardProps> = ({
@@ -27,6 +29,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({
   onToggleRemember,
   onForgotPassword,
   onAlternateIdPress,
+  errorMessage,
 }) => {
   const config = ROLE_CONFIGS[activeRole];
 
@@ -42,10 +45,10 @@ export const AuthCard: React.FC<AuthCardProps> = ({
 
   const handlePressSignIn = () => {
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      onSignIn();
-    }, 400);
+    // Pass credentials; parent decides whether to call Supabase or mock
+    onSignIn(identifier.trim(), password);
+    // Loading state is controlled by parent for async flows
+    setTimeout(() => setIsLoading(false), 1500);
   };
 
   return (
@@ -84,7 +87,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({
       <View style={styles.fieldGroup}>
         <View style={styles.labelRow}>
           <Text style={styles.labelText}>Password</Text>
-          <TouchableOpacity activeOpacity={0.7} onPress={onForgotPassword}>
+          <TouchableOpacity activeOpacity={0.7} onPress={() => onForgotPassword?.(identifier)}>
             <Text style={styles.rightActionLink}>Forgot Password?</Text>
           </TouchableOpacity>
         </View>
@@ -160,6 +163,14 @@ export const AuthCard: React.FC<AuthCardProps> = ({
           </>
         )}
       </TouchableOpacity>
+
+      {/* Inline error message */}
+      {errorMessage ? (
+        <View style={styles.errorBanner}>
+          <Ionicons name="alert-circle-outline" size={16} color="#DC2626" />
+          <Text style={styles.errorText}>{errorMessage}</Text>
+        </View>
+      ) : null}
     </View>
   );
 };
@@ -279,5 +290,23 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  errorText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#DC2626',
+    fontWeight: '500',
   },
 });

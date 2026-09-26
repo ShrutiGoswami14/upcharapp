@@ -21,49 +21,102 @@ interface LoginScreenProps {
   onNavigateToRegister?: () => void;
 }
 
-export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccessLogin, onNavigateToRegister }) => {
+export const LoginScreen: React.FC<LoginScreenProps> = ({
+  onSuccessLogin,
+  onNavigateToRegister,
+}) => {
   const {
     activeRole,
     setActiveRole,
     signIn,
+    signInWithEmail,
+    sendPasswordReset,
     rememberDevice,
     setRememberDevice,
   } = useAuth();
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const handleSignIn = () => {
+  // ── Sign-in handler ────────────────────────────────────────────────────────
+  const handleSignIn = async (email: string, password: string) => {
+    setAuthError(null);
+
+    const cleanEmail = email ? email.trim() : '';
+    const cleanPassword = password ? password.trim() : '';
+
+    // If email and password are provided, attempt real Supabase sign-in first
+    // This looks up the user's DB profile_type and automatically redirects to their authorized dashboard
+    if (cleanEmail && cleanPassword) {
+      const err = await signInWithEmail(cleanEmail, cleanPassword);
+      if (!err) {
+        // Successfully authenticated!
+        // AuthContext automatically set activeRole to the user's DB authorized role (patient, doctor, clinic, or lab)
+        onSuccessLogin?.();
+        return;
+      }
+
+      // If error occurred during patient login, show error message
+      if (activeRole === 'patient') {
+        setAuthError(err.message);
+        return;
+      }
+    }
+
+    // Fallback: Demo / mock sign-in for quick testing of Doctor, Clinic, Lab
     signIn(activeRole);
     onSuccessLogin?.();
   };
 
-  const handleForgotPassword = () => {
-    Alert.alert(
-      'Reset Password',
-      `A password reset link or SMS OTP has been sent for the ${activeRole} account.`,
-      [{ text: 'OK' }]
-    );
+  // ── Forgot password ────────────────────────────────────────────────────────
+  const handleForgotPassword = async (email?: string) => {
+    if (!email) {
+      Alert.alert(
+        'Reset Password',
+        'Please enter your email in the field above, then tap Forgot Password again.'
+      );
+      return;
+    }
+    const err = await sendPasswordReset(email);
+    if (err) {
+      Alert.alert('Error', err.message);
+    } else {
+      Alert.alert(
+        'Email Sent',
+        `A password reset link has been sent to ${email}. Check your inbox.`
+      );
+    }
   };
 
+  // ── Alternate ID press ─────────────────────────────────────────────────────
   const handleAlternateIdPress = () => {
     const config = ROLE_CONFIGS[activeRole];
     showToast(`You can sign in using your official ${config.identifierRightActionText}`);
   };
 
+  // ── Google / OTP (mock for non-patient; could be upgraded later) ───────────
   const handleGooglePress = () => {
+    if (activeRole === 'patient') {
+      showToast('Google Sign-In coming soon for patients!');
+      return;
+    }
     signIn(activeRole);
     showToast(`Signed in with Google as ${activeRole.toUpperCase()}`);
     onSuccessLogin?.();
   };
 
   const handleOtpPress = () => {
+    if (activeRole === 'patient') {
+      showToast('Mobile OTP sign-in coming soon!');
+      return;
+    }
     signIn(activeRole);
-    showToast(`OTP verified successfully for ${activeRole.toUpperCase()}`);
+    showToast(`OTP verified for ${activeRole.toUpperCase()}`);
     onSuccessLogin?.();
   };
 
@@ -73,7 +126,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccessLogin, onNavi
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#F4F6F9" />
 
-      {/* Floating Info Toast */}
+      {/* Floating Toast */}
       {toastMessage && (
         <View style={styles.toast}>
           <Text style={styles.toastText}>{toastMessage}</Text>
@@ -86,19 +139,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccessLogin, onNavi
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Top Spacer / Brand Breathing Room */}
+        {/* Top Spacer */}
         <View style={styles.topSpacer} />
 
-        {/* Subtitle / Header Prompt from Mockup */}
+        {/* Subtitle */}
         <Text style={styles.headerSubtitle}>{config.subtitle}</Text>
 
-        {/* Role Selector Capsule (Patient | Doctor | Lab) */}
+        {/* Role Selector */}
         <RoleSelector
           activeRole={activeRole}
-          onSelectRole={(role) => setActiveRole(role)}
+          onSelectRole={(role) => {
+            setActiveRole(role);
+            setAuthError(null);
+          }}
         />
 
-        {/* Main Authentication Card */}
+        {/* Auth Card */}
         <AuthCard
           activeRole={activeRole}
           onSignIn={handleSignIn}
@@ -106,15 +162,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccessLogin, onNavi
           onToggleRemember={setRememberDevice}
           onForgotPassword={handleForgotPassword}
           onAlternateIdPress={handleAlternateIdPress}
+          errorMessage={authError}
         />
 
-        {/* Social / Alternative Sign-in Options */}
+        {/* Social Sign-in */}
         <SocialAuthButtons
           onGooglePress={handleGooglePress}
           onOtpPress={handleOtpPress}
         />
 
-        {/* Create Account Footer */}
+        {/* Create Account */}
         <View style={styles.footerRow}>
           <Text style={styles.footerPromptText}>Don't have an account? </Text>
           <TouchableOpacity
@@ -125,16 +182,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccessLogin, onNavi
               } else {
                 Alert.alert(
                   'Registration',
-                  `Redirecting to ${config.title} registration form...`
+                  `Please contact your Upchar Health administrator to register as ${config.title}.`
                 );
               }
             }}
           >
-            <Text style={styles.footerLinkText}>Create Account</Text>
+            <Text style={styles.footerLinkText}>
+              {activeRole === 'patient' ? 'Create Account' : 'Contact Admin'}
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {/* Bottom capsule decor */}
         <View style={styles.bottomBarCapsule} />
       </ScrollView>
     </SafeAreaView>

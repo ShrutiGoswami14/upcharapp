@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -10,15 +10,169 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
+import { supabase } from '../../services/supabase/client';
 
 interface PatientDashboardProps {
   onNavigateToClinicDetail?: (clinicId: string) => void;
+}
+
+interface LiveQueueData {
+  doctorName: string;
+  specialization: string;
+  clinicName: string;
+  tokenNumber: string;
+  nowServing: string;
+  waitTime: string;
+  aheadText: string;
+  status: string;
+  timeSlot: string;
+}
+
+interface DiagnosticReportItem {
+  id: string;
+  title: string;
+  labName: string;
+  status: string;
+  reportUrl?: string | null;
 }
 
 export const PatientDashboard: React.FC<PatientDashboardProps> = ({
   onNavigateToClinicDetail,
 }) => {
   const { user } = useAuth();
+
+  // Active appointment / OPD queue data matching database
+  const [appointment, setAppointment] = useState<LiveQueueData>({
+    doctorName: 'Dr. Roshan (General Physician)',
+    specialization: 'General Physician',
+    clinicName: 'City Care Clinic',
+    tokenNumber: '#01',
+    nowServing: '#01',
+    waitTime: 'Next',
+    aheadText: 'Your consultation slot is ready • Room 1',
+    status: 'Confirmed',
+    timeSlot: '11:00 AM',
+  });
+
+  // Recent diagnostic reports matching database
+  const [reports, setReports] = useState<DiagnosticReportItem[]>([
+    {
+      id: 'r1',
+      title: 'Complete Blood Count (CBC) + ESR',
+      labName: 'Diag3 Diagnostic Centre • 24 Sep 2026',
+      status: 'Verified Report Ready',
+    },
+  ]);
+
+  // Load real appointments and diagnostic reports from DB for this patient
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadPatientData() {
+      if (!user) return;
+
+      try {
+        // Query appointments matching patient ID or patient phone
+        const filterOr = user.phone
+          ? `patient_id.eq.${user.id},patient_phone.eq.${user.phone}`
+          : `patient_id.eq.${user.id}`;
+
+        const { data: apptRows } = await supabase
+          .from('appointments')
+          .select('*')
+          .or(filterOr)
+          .order('date', { ascending: false })
+          .limit(1);
+
+        if (isMounted && apptRows && apptRows.length > 0) {
+          const appt = apptRows[0];
+          const tokenNum = appt.queue_number
+            ? appt.queue_number < 10
+              ? `#0${appt.queue_number}`
+              : `#${appt.queue_number}`
+            : '#01';
+          const isDone = appt.status === 'Completed';
+
+          setAppointment({
+            doctorName: `Dr. ${appt.doctor_name || 'Roshan'} (${appt.specialization || 'General Physician'})`,
+            specialization: appt.specialization || 'General Physician',
+            clinicName: appt.organization_type || 'City Care Clinic',
+            tokenNumber: tokenNum,
+            nowServing: tokenNum,
+            waitTime: isDone ? 'Done' : '~10m',
+            aheadText: isDone
+              ? 'Consultation completed • Prescription uploaded'
+              : 'Next in line • Please proceed to consultation cabin',
+            status: appt.status || 'Confirmed',
+            timeSlot: appt.time_slot || '11:00 AM',
+          });
+        }
+
+        // Query diagnostic requests matching patient ID, phone, or name
+        const diagFilterOr = user.phone
+          ? `patient_id.eq.${user.id},patient_phone.eq.${user.phone},patient_name.ilike.%${user.name}%`
+          : `patient_id.eq.${user.id},patient_name.ilike.%${user.name}%`;
+
+        const { data: diagRows } = await supabase
+          .from('diagnostic_requests')
+          .select('*')
+          .or(diagFilterOr)
+          .order('created_at', { ascending: false })
+          .limit(3);
+
+        if (isMounted && diagRows && diagRows.length > 0) {
+          const mappedReports: DiagnosticReportItem[] = diagRows.map(
+            (row: any) => {
+              let title = 'Health Diagnostic Panel';
+              if (
+                Array.isArray(row.selected_tests) &&
+                row.selected_tests.length > 0
+              ) {
+                title = row.selected_tests.join(' • ');
+              } else if (typeof row.selected_tests === 'string') {
+                title = row.selected_tests;
+              } else if (row.custom_tests) {
+                title = row.custom_tests;
+              }
+
+              const formattedDate = row.created_at
+                ? new Date(row.created_at).toLocaleDateString('en-IN', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                  })
+                : 'Recent';
+
+              const labName = `${row.diagnostic_center_name || 'Diag3'} • ${formattedDate}`;
+              const status =
+                row.status === 'paid'
+                  ? 'Verified Report Ready'
+                  : row.status === 'quoted'
+                  ? 'Quote Available'
+                  : 'Processing Sample';
+
+              return {
+                id: row.id,
+                title,
+                labName,
+                status,
+                reportUrl: row.report_url,
+              };
+            }
+          );
+          setReports(mappedReports);
+        }
+      } catch (err) {
+        console.warn('Could not load patient DB attributes:', err);
+      }
+    }
+
+    loadPatientData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
 
   return (
     <ScrollView
@@ -40,17 +194,19 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
           <View>
             <View style={styles.greetingRow}>
               <Text style={styles.greetingText}>Namaste,</Text>
-              <Text style={styles.userName}>{user?.name || 'Rahul Verma'}</Text>
+              <Text style={styles.userName}>{user?.name || 'Sanjay Sharma'}</Text>
             </View>
             <View style={styles.uhidBadgeRow}>
               <View style={styles.uhidBadge}>
                 <Ionicons name="card-outline" size={12} color="#0080FF" />
                 <Text style={styles.uhidText}>
-                  {user?.identifier || 'UPC-PAT-882910'}
+                  {user?.identifier || 'UPC-PAT-679342'}
                 </Text>
               </View>
               <View style={styles.bloodBadge}>
-                <Text style={styles.bloodText}>O+ Positive</Text>
+                <Text style={styles.bloodText}>
+                  {user?.bloodGroup || 'O+ Positive'}
+                </Text>
               </View>
             </View>
           </View>
@@ -75,14 +231,14 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
         </TouchableOpacity>
       </View>
 
-      {/* 3. Live OPD Queue Tracker Card (PRD Core Feature) */}
+      {/* 3. Live OPD Queue Tracker Card (Connected to DB Appointments) */}
       <View style={styles.liveQueueCard}>
         <View style={styles.queueHeaderRow}>
           <View style={styles.liveIndicator}>
             <View style={styles.pulseDot} />
             <Text style={styles.liveIndicatorText}>LIVE OPD QUEUE</Text>
           </View>
-          <Text style={styles.clinicTag}>City Care Clinic</Text>
+          <Text style={styles.clinicTag}>{appointment.clinicName}</Text>
         </View>
 
         <View style={styles.queueBody}>
@@ -92,15 +248,15 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
               size={20}
               color="#0080FF"
             />
-            <Text style={styles.doctorNameText}>
-              Dr. Rajesh Sharma (General Physician)
-            </Text>
+            <Text style={styles.doctorNameText}>{appointment.doctorName}</Text>
           </View>
 
           <View style={styles.tokenHighlightRow}>
             <View style={styles.tokenBox}>
               <Text style={styles.tokenBoxLabel}>YOUR TOKEN</Text>
-              <Text style={styles.tokenBoxValue}>#04</Text>
+              <Text style={styles.tokenBoxValue}>
+                {appointment.tokenNumber}
+              </Text>
             </View>
 
             <View style={styles.tokenDivider} />
@@ -108,7 +264,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
             <View style={styles.tokenBox}>
               <Text style={styles.tokenBoxLabel}>NOW SERVING</Text>
               <Text style={[styles.tokenBoxValue, { color: '#0D9488' }]}>
-                #02
+                {appointment.nowServing}
               </Text>
             </View>
 
@@ -117,7 +273,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
             <View style={styles.tokenBox}>
               <Text style={styles.tokenBoxLabel}>WAIT TIME</Text>
               <Text style={[styles.tokenBoxValue, { color: '#F59E0B' }]}>
-                ~18m
+                {appointment.waitTime}
               </Text>
             </View>
           </View>
@@ -125,9 +281,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
           <View style={styles.queueFooterRow}>
             <View style={styles.aheadBadge}>
               <Ionicons name="time-outline" size={14} color="#0369A1" />
-              <Text style={styles.aheadText}>
-                2 patients ahead • Please proceed to clinic room 2
-              </Text>
+              <Text style={styles.aheadText}>{appointment.aheadText}</Text>
             </View>
             <TouchableOpacity
               activeOpacity={0.7}
@@ -185,7 +339,7 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
         </TouchableOpacity>
       </View>
 
-      {/* 5. Recent Reports & Prescriptions */}
+      {/* 5. Recent Reports & Prescriptions (Connected to DB diagnostic_requests) */}
       <View style={styles.sectionHeaderRow}>
         <Text style={styles.sectionTitle}>Recent Diagnostic Reports</Text>
         <TouchableOpacity>
@@ -193,22 +347,28 @@ export const PatientDashboard: React.FC<PatientDashboardProps> = ({
         </TouchableOpacity>
       </View>
 
-      <View style={styles.reportCard}>
-        <View style={styles.reportIconBox}>
-          <Ionicons name="document-attach-outline" size={24} color="#0D9488" />
-        </View>
-        <View style={styles.reportDetails}>
-          <Text style={styles.reportName}>Complete Blood Count (CBC) + ESR</Text>
-          <Text style={styles.reportLab}>Apex Diagnostic Centre • 24 Sep 2026</Text>
-          <View style={styles.readyBadge}>
-            <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
-            <Text style={styles.readyText}>Verified Report Ready</Text>
+      {reports.map((report) => (
+        <View key={report.id} style={styles.reportCard}>
+          <View style={styles.reportIconBox}>
+            <Ionicons
+              name="document-attach-outline"
+              size={24}
+              color="#0D9488"
+            />
           </View>
+          <View style={styles.reportDetails}>
+            <Text style={styles.reportName}>{report.title}</Text>
+            <Text style={styles.reportLab}>{report.labName}</Text>
+            <View style={styles.readyBadge}>
+              <Ionicons name="checkmark-circle" size={13} color="#16A34A" />
+              <Text style={styles.readyText}>{report.status}</Text>
+            </View>
+          </View>
+          <TouchableOpacity style={styles.downloadBtn}>
+            <Ionicons name="arrow-down-circle" size={26} color="#0080FF" />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.downloadBtn}>
-          <Ionicons name="arrow-down-circle" size={26} color="#0080FF" />
-        </TouchableOpacity>
-      </View>
+      ))}
     </ScrollView>
   );
 };
@@ -300,75 +460,79 @@ const styles = StyleSheet.create({
   },
   unreadDot: {
     position: 'absolute',
-    top: 9,
-    right: 9,
+    top: 10,
+    right: 10,
     width: 8,
     height: 8,
     borderRadius: 4,
     backgroundColor: '#EF4444',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
   },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    paddingHorizontal: 14,
+    borderRadius: 14,
+    paddingHorizontal: 12,
     height: 48,
     borderWidth: 1,
     borderColor: '#E2E8F0',
     marginBottom: 20,
     shadowColor: '#000',
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
     elevation: 1,
   },
   searchInput: {
     flex: 1,
-    fontSize: 14,
+    fontSize: 13.5,
     color: '#0F172A',
-    marginLeft: 10,
+    marginLeft: 8,
+    paddingVertical: 0,
   },
   filterBtn: {
     padding: 6,
   },
   liveQueueCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 22,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#BAE6FD',
-    shadowColor: '#0284C7',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
+    borderColor: '#E2E8F0',
+    marginBottom: 24,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
   },
   queueHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    backgroundColor: '#F0F9FF',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0F2FE',
   },
   liveIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#F0FDF4',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 20,
   },
   pulseDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: '#16A34A',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#0284C7',
   },
   liveIndicatorText: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#16A34A',
+    color: '#0284C7',
     letterSpacing: 0.5,
   },
   clinicTag: {
@@ -377,76 +541,77 @@ const styles = StyleSheet.create({
     color: '#0369A1',
   },
   queueBody: {
-    gap: 12,
+    padding: 16,
   },
   doctorInfoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
+    marginBottom: 14,
   },
   doctorNameText: {
-    fontSize: 14,
+    fontSize: 14.5,
     fontWeight: '700',
     color: '#0F172A',
   },
   tokenHighlightRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     backgroundColor: '#F8FAFC',
     borderRadius: 14,
     paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'space-around',
+    paddingHorizontal: 16,
     borderWidth: 1,
     borderColor: '#F1F5F9',
+    marginBottom: 14,
   },
   tokenBox: {
     alignItems: 'center',
+    flex: 1,
   },
   tokenBoxLabel: {
     fontSize: 10,
     fontWeight: '700',
     color: '#64748B',
     marginBottom: 4,
+    letterSpacing: 0.5,
   },
   tokenBoxValue: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     color: '#0080FF',
   },
   tokenDivider: {
     width: 1,
-    height: 30,
+    height: 28,
     backgroundColor: '#E2E8F0',
   },
   queueFooterRow: {
-    flexDirection: 'column',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     gap: 8,
-    marginTop: 2,
   },
   aheadBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#F0F9FF',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
+    flex: 1,
   },
   aheadText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#0369A1',
+    fontSize: 11.5,
+    color: '#475569',
+    fontWeight: '500',
     flex: 1,
   },
   viewQueueDetailsBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 4,
-    paddingVertical: 2,
+    gap: 2,
   },
   viewQueueDetailsText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
     color: '#0080FF',
   },
@@ -461,7 +626,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
-    marginTop: 10,
   },
   viewAllText: {
     fontSize: 13,
@@ -471,41 +635,29 @@ const styles = StyleSheet.create({
   quickGrid: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 20,
-    gap: 10,
+    marginBottom: 24,
   },
   gridItem: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    paddingVertical: 14,
-    paddingHorizontal: 6,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
+    flex: 1,
   },
   iconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 8,
   },
   gridTitle: {
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: '700',
-    color: '#1E293B',
-    textAlign: 'center',
+    color: '#0F172A',
   },
   gridSubtitle: {
-    fontSize: 10,
+    fontSize: 10.5,
     color: '#64748B',
-    marginTop: 2,
+    marginTop: 1,
   },
   reportCard: {
     flexDirection: 'row',
@@ -515,17 +667,14 @@ const styles = StyleSheet.create({
     padding: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 2,
+    marginBottom: 10,
     gap: 12,
   },
   reportIconBox: {
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: '#F0FDFA',
+    backgroundColor: '#CCFBF1',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -533,20 +682,20 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   reportName: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '700',
     color: '#0F172A',
+    marginBottom: 3,
   },
   reportLab: {
-    fontSize: 11,
+    fontSize: 11.5,
     color: '#64748B',
-    marginTop: 2,
+    marginBottom: 4,
   },
   readyBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    marginTop: 4,
   },
   readyText: {
     fontSize: 11,
